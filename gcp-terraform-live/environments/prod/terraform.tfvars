@@ -1,0 +1,13 @@
+project_id                = "gcplearning-15042026"
+region                    = "us-central1"
+environment               = "prod"
+zone                      = "us-central1-c"
+terraform_service_account = "terraform-prod@gcplearning-15042026.iam.gserviceaccount.com"
+cidr_block                = "10.2.0.0/16"
+public_cidr               = "10.2.1.0/24"
+private_cidr              = "10.2.2.0/24"
+data_cidr                 = "10.2.3.0/24"
+web_machine_type          = "n1-standard-4"
+web_vm_count              = 3
+web_vm_names              = ["prod-nginx-1", "prod-nginx-2", "prod-nginx-3"]
+db_password_secret_id     = "projects/gcplearning-15042026/secrets/db-password-prod/versions/latest"

@@ -1,0 +1,72 @@
+name: DAST Scan
+
+on:
+  push:
+    branches: [main]
+  schedule:
+    - cron: '0 2 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: dast-scan
+  cancel-in-progress: true
+
+jobs:
+  zap-baseline:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - environment: dev
+            target_secret: DAST_TARGET_DEV
+          - environment: stage
+            target_secret: DAST_TARGET_STAGE
+          - environment: prod
+            target_secret: DAST_TARGET_PROD
+    env:
+      DAST_TARGET_DEV: ${{ secrets.DAST_TARGET_DEV }}
+      DAST_TARGET_STAGE: ${{ secrets.DAST_TARGET_STAGE }}
+      DAST_TARGET_PROD: ${{ secrets.DAST_TARGET_PROD }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Resolve target
+        id: target
+        run: |
+          TARGET_VAR="${{ matrix.target_secret }}"
+          TARGET_URL="${!TARGET_VAR}"
+          echo "::add-mask::$TARGET_URL"
+          if [ -z "$TARGET_URL" ]; then
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+            echo "No DAST target configured for ${{ matrix.environment }}."
+          else
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Run OWASP ZAP baseline
+        if: steps.target.outputs.enabled == 'true'
+        run: |
+          TARGET_VAR="${{ matrix.target_secret }}"
+          TARGET_URL="${!TARGET_VAR}"
+          docker run --rm \
+            -v "$PWD:/zap/wrk" \
+            ghcr.io/zaproxy/zaproxy:stable \
+            zap-baseline.py \
+            -t "$TARGET_URL" \
+            -J report-${{ matrix.environment }}.json \
+            -r report-${{ matrix.environment }}.html \
+            -w report-${{ matrix.environment }}.md
+      - name: Upload report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: dast-${{ matrix.environment }}-${{ github.run_id }}
+          path: |
+            report-${{ matrix.environment }}.json
+            report-${{ matrix.environment }}.html
+            report-${{ matrix.environment }}.md
+          if-no-files-found: ignore
+          retention-days: 14

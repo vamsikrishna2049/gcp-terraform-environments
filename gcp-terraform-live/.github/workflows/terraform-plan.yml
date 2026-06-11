@@ -1,0 +1,145 @@
+name: Terraform Plan
+
+on:
+  pull_request:
+    branches: [main, develop]
+    paths:
+      - 'environments/**'
+      - 'modules/**'
+      - '.github/workflows/terraform-plan.yml'
+
+permissions:
+  contents: read
+  id-token: write
+  pull-requests: read
+
+concurrency:
+  group: terraform-plan-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  terraform-validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        environment: [dev, stage, prod]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.9.8
+      - name: Check formatting
+        run: terraform fmt -check -recursive
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ secrets.WIF_PROVIDER }}
+          service_account: ${{ secrets.WIF_SERVICE_ACCOUNT }}
+      - name: Terraform init
+        working-directory: environments/${{ matrix.environment }}
+        run: terraform init -backend=false -input=false
+      - name: Validate configuration
+        working-directory: environments/${{ matrix.environment }}
+        run: terraform validate
+
+  terraform-plan:
+    needs: terraform-validate
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        environment: [dev, stage, prod]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.9.8
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ secrets.WIF_PROVIDER }}
+          service_account: ${{ secrets.WIF_SERVICE_ACCOUNT }}
+      - name: Init and plan
+        working-directory: environments/${{ matrix.environment }}
+        run: |
+          terraform init -input=false -backend-config=backend.hcl
+          terraform plan -input=false -out=tfplan
+          terraform show -no-color tfplan > terraform-plan-${{ matrix.environment }}.txt
+      - name: Upload plan artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: terraform-plan-${{ matrix.environment }}-${{ github.run_id }}
+          path: |
+            environments/${{ matrix.environment }}/tfplan
+            environments/${{ matrix.environment }}/terraform-plan-${{ matrix.environment }}.txt
+          retention-days: 7
+
+  security-scan:
+    needs: terraform-plan
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        environment: [dev, stage, prod]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run tflint
+        run: |
+          docker run --rm \
+            -v "$PWD:/workspace" \
+            -w /workspace \
+            ghcr.io/terraform-linters/tflint:v0.53.0 \
+            --init \
+            --config=/workspace/.tflint.hcl
+          docker run --rm \
+            -v "$PWD:/workspace" \
+            -w /workspace \
+            ghcr.io/terraform-linters/tflint:v0.53.0 \
+            --chdir=environments/${{ matrix.environment }} \
+            --config=/workspace/.tflint.hcl \
+            --format compact
+      - name: Run tfsec
+        run: |
+          docker run --rm \
+            -v "$PWD:/src" \
+            aquasec/tfsec:v1.28 \
+            /src/environments/${{ matrix.environment }}
+      - name: Run checkov
+        run: |
+          docker run --rm \
+            -v "$PWD:/tf" \
+            bridgecrew/checkov:3.2.77 \
+            -d /tf/environments/${{ matrix.environment }} \
+            --quiet \
+            -o cli \
+            -o json \
+            --output-file-path console,/tf/checkov-${{ matrix.environment }}.json
+      - name: Upload security reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: security-reports-${{ matrix.environment }}-${{ github.run_id }}
+          path: checkov-${{ matrix.environment }}.json
+          retention-days: 14
+
+  code-quality:
+    needs: terraform-plan
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: SonarCloud Scan
+        if: env.SONAR_TOKEN != ''
+        uses: SonarSource/sonarqube-scan-action@v5
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+        with:
+          projectBaseDir: .

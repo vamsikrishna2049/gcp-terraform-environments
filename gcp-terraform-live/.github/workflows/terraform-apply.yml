@@ -1,0 +1,113 @@
+name: Terraform Apply
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Environment to deploy'
+        type: choice
+        options:
+          - dev
+          - stage
+          - prod
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: terraform-apply-${{ github.event.inputs.environment }}
+  cancel-in-progress: false
+
+jobs:
+  plan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.9.8
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ secrets.WIF_PROVIDER }}
+          service_account: ${{ secrets.WIF_SERVICE_ACCOUNT }}
+      - name: Terraform init
+        working-directory: environments/${{ github.event.inputs.environment }}
+        run: terraform init -input=false -backend-config=backend.hcl
+      - name: Terraform validate
+        working-directory: environments/${{ github.event.inputs.environment }}
+        run: terraform validate
+      - name: Terraform plan
+        working-directory: environments/${{ github.event.inputs.environment }}
+        run: |
+          terraform plan -input=false -out=tfplan
+          terraform show -no-color tfplan > terraform-plan-${{ github.event.inputs.environment }}.txt
+      - name: Upload plan
+        uses: actions/upload-artifact@v4
+        with:
+          name: terraform-plan-${{ github.run_id }}
+          path: |
+            environments/${{ github.event.inputs.environment }}/tfplan
+            environments/${{ github.event.inputs.environment }}/terraform-plan-${{ github.event.inputs.environment }}.txt
+          retention-days: 7
+
+  approval-gate:
+    needs: plan
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Require approval
+        if: ${{ github.event.inputs.environment != 'dev' }}
+        run: echo "Manual approval required for ${{ github.event.inputs.environment }}"
+
+  apply:
+    needs: [plan, approval-gate]
+    runs-on: ubuntu-latest
+    environment: ${{ github.event.inputs.environment }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.9.8
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ secrets.WIF_PROVIDER }}
+          service_account: ${{ secrets.WIF_SERVICE_ACCOUNT }}
+      - name: Download plan
+        uses: actions/download-artifact@v4
+        with:
+          name: terraform-plan-${{ github.run_id }}
+          path: environments/${{ github.event.inputs.environment }}
+      - name: Apply plan
+        working-directory: environments/${{ github.event.inputs.environment }}
+        run: |
+          terraform init -input=false -backend-config=backend.hcl
+          terraform apply -input=false tfplan
+
+  post-deployment-validation:
+    needs: apply
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ secrets.WIF_PROVIDER }}
+          service_account: ${{ secrets.WIF_SERVICE_ACCOUNT }}
+      - name: Run post deploy validation
+        run: ./scripts/post-deploy-validation.sh ${{ github.event.inputs.environment }} ${{ secrets.GCP_PROJECT_ID }}
+
+  notify:
+    needs: post-deployment-validation
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Notify team
+        run: echo "Deployment to ${{ github.event.inputs.environment }} complete"

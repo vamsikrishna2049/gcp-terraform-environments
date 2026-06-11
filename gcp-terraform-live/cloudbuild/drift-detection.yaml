@@ -1,0 +1,62 @@
+substitutions:
+  _ENVIRONMENT: "dev"
+  _STATE_PROJECT_ID: ""
+  _TERRAFORM_VERSION: "1.9.8"
+
+options:
+  logging: CLOUD_LOGGING_ONLY
+
+steps:
+  - id: validate-environment
+    name: gcr.io/google.com/cloudsdktool/google-cloud-cli:slim
+    entrypoint: bash
+    args:
+      - -c
+      - |
+        case "${_ENVIRONMENT}" in
+          dev|stage|prod) ;;
+          *) echo "Invalid _ENVIRONMENT: ${_ENVIRONMENT}. Use dev, stage, or prod." && exit 1 ;;
+        esac
+        test -d "environments/${_ENVIRONMENT}" || { echo "Missing environments/${_ENVIRONMENT}."; exit 1; }
+
+  - id: terraform-init
+    name: hashicorp/terraform:${_TERRAFORM_VERSION}
+    entrypoint: sh
+    dir: environments/${_ENVIRONMENT}
+    args:
+      - -c
+      - |
+        STATE_PROJECT_ID="${_STATE_PROJECT_ID}"
+        if [ -z "$STATE_PROJECT_ID" ]; then
+          STATE_PROJECT_ID="${PROJECT_ID}"
+        fi
+        terraform init -input=false \
+          -backend-config="bucket=${STATE_PROJECT_ID}-terraform-state-${_ENVIRONMENT}" \
+          -backend-config="prefix=terraform/state/${_ENVIRONMENT}"
+
+  - id: drift-plan
+    name: hashicorp/terraform:${_TERRAFORM_VERSION}
+    entrypoint: sh
+    dir: environments/${_ENVIRONMENT}
+    args:
+      - -c
+      - |
+        set +e
+        terraform plan -input=false -detailed-exitcode -no-color > drift-${_ENVIRONMENT}.txt
+        exit_code=$?
+        cat drift-${_ENVIRONMENT}.txt
+        if [ "$exit_code" -eq 2 ]; then
+          echo "Terraform drift detected in ${_ENVIRONMENT}."
+          exit 2
+        fi
+        if [ "$exit_code" -ne 0 ]; then
+          echo "Terraform drift check failed for ${_ENVIRONMENT}."
+          exit "$exit_code"
+        fi
+        echo "No Terraform drift detected in ${_ENVIRONMENT}."
+
+artifacts:
+  objects:
+    location: gs://${PROJECT_ID}-cloudbuild-artifacts/drift/${BUILD_ID}/
+    paths:
+      - environments/${_ENVIRONMENT}/drift-${_ENVIRONMENT}.txt

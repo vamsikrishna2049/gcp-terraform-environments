@@ -1,0 +1,43 @@
+substitutions:
+  _TARGET_URL: ""
+  _SCAN_MODE: "baseline"
+
+options:
+  logging: CLOUD_LOGGING_ONLY
+
+steps:
+  - id: validate-inputs
+    name: gcr.io/google.com/cloudsdktool/google-cloud-cli:slim
+    entrypoint: bash
+    args:
+      - -c
+      - |
+        case "${_SCAN_MODE}" in
+          baseline|active) ;;
+          *) echo "Invalid _SCAN_MODE: ${_SCAN_MODE}. Use baseline or active." && exit 1 ;;
+        esac
+        test -n "${_TARGET_URL}" || { echo "_TARGET_URL is required."; exit 1; }
+        case "${_TARGET_URL}" in
+          http://*|https://*) ;;
+          *) echo "_TARGET_URL must start with http:// or https://" && exit 1 ;;
+        esac
+
+  - id: zap-scan
+    name: ghcr.io/zaproxy/zaproxy:stable
+    entrypoint: bash
+    args:
+      - -c
+      - |
+        mkdir -p /workspace/dast-reports
+        if [ "${_SCAN_MODE}" = "active" ]; then
+          zap-full-scan.py -t "${_TARGET_URL}" -J /workspace/dast-reports/zap-report.json -r /workspace/dast-reports/zap-report.html
+        else
+          zap-baseline.py -t "${_TARGET_URL}" -J /workspace/dast-reports/zap-report.json -r /workspace/dast-reports/zap-report.html
+        fi
+
+artifacts:
+  objects:
+    location: gs://${PROJECT_ID}-cloudbuild-artifacts/dast/${BUILD_ID}/
+    paths:
+      - dast-reports/zap-report.json
+      - dast-reports/zap-report.html

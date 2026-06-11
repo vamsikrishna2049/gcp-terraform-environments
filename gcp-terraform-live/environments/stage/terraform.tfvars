@@ -1,0 +1,13 @@
+project_id                = "gcplearning-15042026"
+region                    = "us-central1"
+environment               = "stage"
+zone                      = "us-central1-b"
+terraform_service_account = "terraform-stage@gcplearning-15042026.iam.gserviceaccount.com"
+cidr_block                = "10.1.0.0/16"
+public_cidr               = "10.1.1.0/24"
+private_cidr              = "10.1.2.0/24"
+data_cidr                 = "10.1.3.0/24"
+web_machine_type          = "n1-standard-2"
+web_vm_count              = 2
+web_vm_names              = ["stage-nginx-1", "stage-nginx-2"]
+db_password_secret_id     = "projects/gcplearning-15042026/secrets/db-password-stage/versions/latest"

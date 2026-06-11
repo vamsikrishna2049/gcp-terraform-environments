@@ -1,0 +1,13 @@
+project_id = "gcplearning-15042026"
+region     = "us-central1"
+
+environments = ["dev", "stage", "prod"]
+
+artifact_registry_repository_id = "docker-repo"
+
+# Leave empty to use PROJECT_NUMBER@cloudbuild.gserviceaccount.com.
+cloud_build_service_account_email = ""
+
+# Keep false unless intentionally destroying bootstrap-created buckets.
+state_bucket_force_destroy    = false
+artifact_bucket_force_destroy = false

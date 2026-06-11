@@ -1,0 +1,13 @@
+project_id                = "gcplearning-15042026"
+region                    = "us-central1"
+environment               = "dev"
+zone                      = "us-central1-a"
+terraform_service_account = "terraform-dev@gcplearning-15042026.iam.gserviceaccount.com"
+cidr_block                = "10.0.0.0/16"
+public_cidr               = "10.0.1.0/24"
+private_cidr              = "10.0.2.0/24"
+data_cidr                 = "10.0.3.0/24"
+web_machine_type          = "n1-standard-1"
+web_vm_count              = 1
+web_vm_names              = ["dev-nginx"]
+db_password_secret_id     = "projects/gcplearning-15042026/secrets/db-password-dev/versions/latest"

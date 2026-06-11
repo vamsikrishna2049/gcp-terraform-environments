@@ -1,0 +1,61 @@
+name: Drift Detection
+
+on:
+  schedule:
+    - cron: '0 2 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write
+  issues: write
+
+concurrency:
+  group: drift-detection
+  cancel-in-progress: false
+
+jobs:
+  detect-drift:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        environment: [dev, stage, prod]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.9.8
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ secrets.WIF_PROVIDER }}
+          service_account: ${{ secrets.WIF_SERVICE_ACCOUNT }}
+      - id: plan
+        name: Run drift detection
+        working-directory: environments/${{ matrix.environment }}
+        run: |
+          terraform init -input=false -backend-config=backend.hcl
+          set +e
+          terraform plan -input=false -detailed-exitcode -no-color > drift-${{ matrix.environment }}.txt
+          echo "plan_exit_code=$?" >> $GITHUB_OUTPUT
+        continue-on-error: true
+      - name: Upload drift plan
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: drift-${{ matrix.environment }}-${{ github.run_id }}
+          path: environments/${{ matrix.environment }}/drift-${{ matrix.environment }}.txt
+          retention-days: 14
+      - name: Create issue if drift detected
+        if: steps.plan.outputs.plan_exit_code == '2'
+        uses: peter-evans/create-issue@v4
+        with:
+          title: "Drift detected in ${{ matrix.environment }}"
+          body: "Terraform plan detected drift in `${{ matrix.environment }}`. Review the uploaded drift artifact from run `${{ github.run_id }}` before applying remediation."
+          labels: drift-detected, ${{ matrix.environment }}
+      - name: Fail on terraform error
+        if: steps.plan.outputs.plan_exit_code == '1'
+        run: exit 1

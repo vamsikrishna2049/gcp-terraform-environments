@@ -1,0 +1,72 @@
+substitutions:
+  _ENVIRONMENT: "dev"
+  _STATE_PROJECT_ID: ""
+  _TERRAFORM_VERSION: "1.9.8"
+
+options:
+  logging: CLOUD_LOGGING_ONLY
+
+steps:
+  - id: validate-environment
+    name: gcr.io/google.com/cloudsdktool/google-cloud-cli:slim
+    entrypoint: bash
+    args:
+      - -c
+      - |
+        case "${_ENVIRONMENT}" in
+          dev|stage|prod) ;;
+          *) echo "Invalid _ENVIRONMENT: ${_ENVIRONMENT}. Use dev, stage, or prod." && exit 1 ;;
+        esac
+        test -d "environments/${_ENVIRONMENT}" || { echo "Missing environments/${_ENVIRONMENT}."; exit 1; }
+
+  - id: terraform-init
+    name: hashicorp/terraform:${_TERRAFORM_VERSION}
+    entrypoint: sh
+    dir: environments/${_ENVIRONMENT}
+    args:
+      - -c
+      - |
+        STATE_PROJECT_ID="${_STATE_PROJECT_ID}"
+        if [ -z "$STATE_PROJECT_ID" ]; then
+          STATE_PROJECT_ID="${PROJECT_ID}"
+        fi
+        terraform init -input=false \
+          -backend-config="bucket=${STATE_PROJECT_ID}-terraform-state-${_ENVIRONMENT}" \
+          -backend-config="prefix=terraform/state/${_ENVIRONMENT}"
+
+  - id: terraform-plan
+    name: hashicorp/terraform:${_TERRAFORM_VERSION}
+    entrypoint: sh
+    dir: environments/${_ENVIRONMENT}
+    args:
+      - -c
+      - |
+        terraform plan -input=false -out=tfplan
+        terraform show -no-color tfplan > terraform-plan-${_ENVIRONMENT}.txt
+
+  - id: terraform-apply
+    name: hashicorp/terraform:${_TERRAFORM_VERSION}
+    entrypoint: sh
+    dir: environments/${_ENVIRONMENT}
+    args:
+      - -c
+      - |
+        terraform apply -input=false -auto-approve tfplan
+
+  - id: post-deploy-validation
+    name: gcr.io/google.com/cloudsdktool/google-cloud-cli:slim
+    entrypoint: bash
+    args:
+      - -c
+      - |
+        TARGET_PROJECT_ID="$(sed -n 's/^project_id[[:space:]]*=[[:space:]]*"\([^"]*\)".*/\1/p' environments/${_ENVIRONMENT}/terraform.tfvars)"
+        test -n "$TARGET_PROJECT_ID" || { echo "Could not read project_id from environments/${_ENVIRONMENT}/terraform.tfvars."; exit 1; }
+        chmod +x scripts/post-deploy-validation.sh
+        scripts/post-deploy-validation.sh "${_ENVIRONMENT}" "$TARGET_PROJECT_ID"
+
+artifacts:
+  objects:
+    location: gs://${PROJECT_ID}-cloudbuild-artifacts/terraform-applies/${BUILD_ID}/
+    paths:
+      - environments/${_ENVIRONMENT}/tfplan
+      - environments/${_ENVIRONMENT}/terraform-plan-${_ENVIRONMENT}.txt

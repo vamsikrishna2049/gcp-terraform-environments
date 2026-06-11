@@ -1,0 +1,8 @@
+framework:
+  - terraform
+quiet: true
+compact: true
+skip-path:
+  - .terraform
+  - '**/.terraform'
+download-external-modules: false

@@ -1,0 +1,72 @@
+substitutions:
+  _REGION: "us-central1"
+  _REPOSITORY: "docker-repo"
+  _IMAGE_NAME: "cloudsql-secret-rotator"
+  _ROTATOR_DIR: "gcp-terraform-modules/services/cloudsql-secret-rotator"
+  _IMAGE_TAG: ""
+
+options:
+  logging: CLOUD_LOGGING_ONLY
+
+steps:
+  - id: validate-inputs
+    name: gcr.io/google.com/cloudsdktool/google-cloud-cli:slim
+    entrypoint: bash
+    args:
+      - -c
+      - |
+        test -d "${_ROTATOR_DIR}" || { echo "Missing rotator directory: ${_ROTATOR_DIR}"; exit 1; }
+        test -f "${_ROTATOR_DIR}/Dockerfile" || { echo "Missing Dockerfile in ${_ROTATOR_DIR}"; exit 1; }
+
+  - id: bandit-scan
+    name: python:3.11-slim
+    entrypoint: bash
+    args:
+      - -c
+      - |
+        pip install --no-cache-dir bandit
+        bandit -r "${_ROTATOR_DIR}"
+
+  - id: docker-build
+    name: gcr.io/cloud-builders/docker
+    entrypoint: bash
+    args:
+      - -c
+      - |
+        IMAGE_TAG="${_IMAGE_TAG}"
+        if [ -z "$IMAGE_TAG" ]; then
+          IMAGE_TAG="${SHORT_SHA}"
+        fi
+        if [ -z "$IMAGE_TAG" ]; then
+          IMAGE_TAG="${BUILD_ID}"
+        fi
+        docker build \
+          -f "${_ROTATOR_DIR}/Dockerfile" \
+          -t "${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPOSITORY}/${_IMAGE_NAME}:${IMAGE_TAG}" \
+          -t "${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPOSITORY}/${_IMAGE_NAME}:latest" \
+          "${_ROTATOR_DIR}"
+        docker save "${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPOSITORY}/${_IMAGE_NAME}:${IMAGE_TAG}" \
+          -o /workspace/rotator-image.tar
+        echo "$IMAGE_TAG" > /workspace/image-tag.txt
+
+  - id: trivy-scan
+    name: aquasec/trivy:0.56.2
+    entrypoint: sh
+    args:
+      - -c
+      - |
+        trivy image \
+          --severity CRITICAL,HIGH \
+          --exit-code 1 \
+          --no-progress \
+          --input /workspace/rotator-image.tar
+
+  - id: docker-push
+    name: gcr.io/cloud-builders/docker
+    entrypoint: bash
+    args:
+      - -c
+      - |
+        IMAGE_TAG="$(cat /workspace/image-tag.txt)"
+        docker push "${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPOSITORY}/${_IMAGE_NAME}:${IMAGE_TAG}"
+        docker push "${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPOSITORY}/${_IMAGE_NAME}:latest"
