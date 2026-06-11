@@ -1,0 +1,35 @@
+substitutions:
+  _SONAR_HOST_URL: "https://sonarcloud.io"
+  _SONAR_ORGANIZATION: "vamsikrishna2049"
+
+options:
+  logging: CLOUD_LOGGING_ONLY
+
+availableSecrets:
+  secretManager:
+    - versionName: projects/${PROJECT_ID}/secrets/sonar-token/versions/latest
+      env: SONAR_TOKEN
+
+steps:
+  - id: npm-ci
+    name: node:20.15-alpine
+    entrypoint: npm
+    args: ["ci", "--ignore-scripts"]
+
+  - id: test-coverage
+    name: node:20.15-alpine
+    entrypoint: npm
+    args: ["run", "test:coverage", "--", "--runInBand"]
+
+  - id: sonar-scan
+    name: sonarsource/sonar-scanner-cli:11
+    secretEnv: ["SONAR_TOKEN"]
+    entrypoint: bash
+    args:
+      - -c
+      - |
+        set -euo pipefail
+        sonar-scanner \
+          -Dsonar.host.url="${_SONAR_HOST_URL}" \
+          -Dsonar.organization="${_SONAR_ORGANIZATION}" \
+          -Dsonar.token="$$SONAR_TOKEN"

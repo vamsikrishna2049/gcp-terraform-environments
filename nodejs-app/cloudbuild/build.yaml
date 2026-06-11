@@ -1,0 +1,43 @@
+substitutions:
+  _REGION: "us-central1"
+  _REPOSITORY: "apps"
+  _IMAGE_NAME: "nodejs-app"
+
+options:
+  logging: CLOUD_LOGGING_ONLY
+
+images:
+  - "${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPOSITORY}/${_IMAGE_NAME}:$SHORT_SHA"
+  - "${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPOSITORY}/${_IMAGE_NAME}:latest"
+
+steps:
+  - id: build-image
+    name: gcr.io/cloud-builders/docker
+    args:
+      - build
+      - -t
+      - "${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPOSITORY}/${_IMAGE_NAME}:$SHORT_SHA"
+      - -t
+      - "${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPOSITORY}/${_IMAGE_NAME}:latest"
+      - .
+
+  - id: save-image
+    name: gcr.io/cloud-builders/docker
+    args:
+      - save
+      - -o
+      - /workspace/nodejs-app-image.tar
+      - "${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPOSITORY}/${_IMAGE_NAME}:$SHORT_SHA"
+
+  - id: trivy-scan
+    name: aquasec/trivy:0.58.1
+    entrypoint: trivy
+    args:
+      - image
+      - --input
+      - /workspace/nodejs-app-image.tar
+      - --exit-code
+      - "1"
+      - --ignore-unfixed
+      - --severity
+      - HIGH,CRITICAL

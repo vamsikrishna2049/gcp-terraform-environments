@@ -1,0 +1,86 @@
+substitutions:
+  _REGION: "us-central1"
+  _SERVICE_NAME: "nodejs-app"
+  _REPOSITORY: "apps"
+  _IMAGE_NAME: "nodejs-app"
+  _RUNTIME_SERVICE_ACCOUNT: ""
+  _ALLOW_UNAUTHENTICATED: "false"
+  _DB_HOST: ""
+  _DB_PORT: "5432"
+  _DB_NAME: "app_db"
+  _DB_USER: "app_user"
+  _DB_PASSWORD_SECRET: "DB_PASSWORD=db-password:latest"
+
+options:
+  logging: CLOUD_LOGGING_ONLY
+
+steps:
+  - id: build-image
+    name: gcr.io/cloud-builders/docker
+    args:
+      - build
+      - -t
+      - "${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPOSITORY}/${_IMAGE_NAME}:$SHORT_SHA"
+      - -t
+      - "${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPOSITORY}/${_IMAGE_NAME}:latest"
+      - .
+
+  - id: save-image
+    name: gcr.io/cloud-builders/docker
+    args:
+      - save
+      - -o
+      - /workspace/nodejs-app-image.tar
+      - "${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPOSITORY}/${_IMAGE_NAME}:$SHORT_SHA"
+
+  - id: trivy-scan
+    name: aquasec/trivy:0.58.1
+    entrypoint: trivy
+    args:
+      - image
+      - --input
+      - /workspace/nodejs-app-image.tar
+      - --exit-code
+      - "1"
+      - --ignore-unfixed
+      - --severity
+      - HIGH,CRITICAL
+
+  - id: push-image
+    name: gcr.io/cloud-builders/docker
+    args:
+      - push
+      - --all-tags
+      - "${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPOSITORY}/${_IMAGE_NAME}"
+
+  - id: deploy-cloud-run
+    name: gcr.io/google.com/cloudsdktool/google-cloud-cli:slim
+    entrypoint: bash
+    args:
+      - -c
+      - |
+        set -euo pipefail
+
+        SERVICE_ACCOUNT_ARGS=()
+        if [ -n "${_RUNTIME_SERVICE_ACCOUNT}" ]; then
+          SERVICE_ACCOUNT_ARGS=(--service-account="${_RUNTIME_SERVICE_ACCOUNT}")
+        fi
+
+        AUTH_ARGS=(--no-allow-unauthenticated)
+        if [ "${_ALLOW_UNAUTHENTICATED}" = "true" ]; then
+          AUTH_ARGS=(--allow-unauthenticated)
+        fi
+
+        gcloud run deploy "${_SERVICE_NAME}" \
+          --image="${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPOSITORY}/${_IMAGE_NAME}:$SHORT_SHA" \
+          --region="${_REGION}" \
+          --platform=managed \
+          --quiet \
+          --set-env-vars="NODE_ENV=production,DB_HOST=${_DB_HOST},DB_PORT=${_DB_PORT},DB_NAME=${_DB_NAME},DB_USER=${_DB_USER}" \
+          --set-secrets="${_DB_PASSWORD_SECRET}" \
+          "${SERVICE_ACCOUNT_ARGS[@]}" \
+          "${AUTH_ARGS[@]}"
+
+images:
+  - "${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPOSITORY}/${_IMAGE_NAME}:$SHORT_SHA"
+  - "${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPOSITORY}/${_IMAGE_NAME}:latest"

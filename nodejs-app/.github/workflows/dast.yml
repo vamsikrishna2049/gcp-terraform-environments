@@ -1,0 +1,49 @@
+name: DAST
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  dast:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    env:
+      DAST_TARGET_URL: ${{ secrets.DAST_TARGET_URL }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Resolve target
+        id: target
+        run: |
+          echo "::add-mask::$DAST_TARGET_URL"
+          if [ -z "$DAST_TARGET_URL" ]; then
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+            echo "DAST_TARGET_URL is not configured; skipping scan."
+          else
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Run OWASP ZAP baseline
+        if: steps.target.outputs.enabled == 'true'
+        run: |
+          docker run --rm \
+            -v "$PWD:/zap/wrk" \
+            ghcr.io/zaproxy/zaproxy:stable \
+            zap-baseline.py \
+            -t "$DAST_TARGET_URL" \
+            -J dast-report.json \
+            -r dast-report.html \
+            -w dast-report.md
+      - name: Upload DAST report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: dast-report-${{ github.run_id }}
+          path: |
+            dast-report.json
+            dast-report.html
+            dast-report.md
+          if-no-files-found: ignore
+          retention-days: 14

@@ -1,0 +1,33 @@
+substitutions:
+  _NODE_VERSION: "20.15-alpine"
+
+options:
+  logging: CLOUD_LOGGING_ONLY
+
+steps:
+  - id: npm-ci
+    name: node:${_NODE_VERSION}
+    entrypoint: npm
+    args: ["ci", "--ignore-scripts"]
+
+  - id: lint
+    name: node:${_NODE_VERSION}
+    entrypoint: npm
+    args: ["run", "lint"]
+
+  - id: test-coverage
+    name: node:${_NODE_VERSION}
+    entrypoint: npm
+    args: ["run", "test:coverage", "--", "--runInBand"]
+
+  - id: dependency-audit
+    name: node:${_NODE_VERSION}
+    entrypoint: npm
+    args: ["audit", "--audit-level=high"]
+
+artifacts:
+  objects:
+    location: gs://${PROJECT_ID}-cloudbuild-artifacts/nodejs-app/ci/${BUILD_ID}/
+    paths:
+      - coverage/lcov.info
+      - coverage/coverage-final.json

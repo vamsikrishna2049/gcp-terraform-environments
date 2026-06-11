@@ -1,0 +1,154 @@
+name: CI
+
+env:
+  IMAGE_NAME: "gcr.io/${{ secrets.GCP_PROJECT_ID }}/nodejs-app"
+  IMAGE_TAR: nodejs-app-image.tar
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'src/**'
+      - 'Dockerfile'
+      - 'package*.json'
+      - '.github/workflows/ci.yml'
+  pull_request:
+    branches: [main]
+    paths:
+      - 'src/**'
+      - 'tests/**'
+      - 'Dockerfile'
+      - 'package*.json'
+      - '.github/workflows/ci.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: nodejs-ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20.15.0'
+          cache: npm
+      - run: npm ci
+      - run: npm run lint
+      - run: npm run test:coverage
+      - name: Upload coverage
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-${{ github.run_id }}
+          path: coverage
+          retention-days: 7
+
+  sast:
+    needs: test
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Download coverage
+        uses: actions/download-artifact@v4
+        with:
+          name: coverage-${{ github.run_id }}
+          path: coverage
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20.15.0'
+          cache: npm
+      - run: npm ci
+      - name: SonarCloud scan
+        if: env.SONAR_TOKEN != ''
+        uses: SonarSource/sonarqube-scan-action@v5
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+        with:
+          projectBaseDir: .
+
+  dependency-check:
+    needs: sast
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20.15.0'
+          cache: npm
+      - run: npm ci
+      - run: npm audit --audit-level=high
+
+  build:
+    needs: dependency-check
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build Docker image
+        run: |
+          docker build -t $IMAGE_NAME:${{ github.sha }} .
+          docker save $IMAGE_NAME:${{ github.sha }} -o "$IMAGE_TAR"
+      - name: Upload Docker image
+        uses: actions/upload-artifact@v4
+        with:
+          name: nodejs-app-image-${{ github.run_id }}
+          path: ${{ env.IMAGE_TAR }}
+          retention-days: 1
+
+  security-scan:
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Download Docker image
+        uses: actions/download-artifact@v4
+        with:
+          name: nodejs-app-image-${{ github.run_id }}
+      - name: Load Docker image
+        run: docker load -i "$IMAGE_TAR"
+      - name: Trivy scan
+        uses: aquasecurity/trivy-action@0.24.0
+        with:
+          image-ref: ${{ env.IMAGE_NAME }}:${{ github.sha }}
+          severity: CRITICAL,HIGH
+          exit-code: '1'
+          ignore-unfixed: true
+
+  push:
+    needs: security-scan
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - name: Download Docker image
+        uses: actions/download-artifact@v4
+        with:
+          name: nodejs-app-image-${{ github.run_id }}
+      - name: Load Docker image
+        run: docker load -i "$IMAGE_TAR"
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ secrets.WIF_PROVIDER }}
+          service_account: ${{ secrets.WIF_SERVICE_ACCOUNT }}
+      - name: Set up gcloud
+        uses: google-github-actions/setup-gcloud@v2
+      - name: Configure Docker for GCR
+        run: gcloud auth configure-docker --quiet gcr.io
+      - name: Push image to GCR
+        run: |
+          docker tag $IMAGE_NAME:${{ github.sha }} $IMAGE_NAME:latest
+          docker push $IMAGE_NAME:${{ github.sha }}
+          docker push $IMAGE_NAME:latest
